@@ -58,7 +58,7 @@ Missing-Lego/
 ├── sets/                   ← hand-written source lists (user's text format)
 │   └── 31084.txt
 ├── build/fetch.mjs         ← Node build script (calls Rebrickable)
-├── .env                    ← REBRICKABLE_API_KEY (gitignored)
+├── .env                    ← REBRICKABLE_COM_API_KEY (gitignored)
 └── docs/superpowers/specs/ ← this spec
 ```
 
@@ -85,7 +85,7 @@ Parsing rules:
 
 ## Build script (`build/fetch.mjs`)
 
-- Reads `REBRICKABLE_API_KEY` from `.env`.
+- Reads `REBRICKABLE_COM_API_KEY` from `.env`.
 - Parses every `sets/*.txt`.
 - For each unique element ID, calls Rebrickable
   `GET /api/v3/lego/elements/{element_id}/` to obtain:
