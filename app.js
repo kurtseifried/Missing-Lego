@@ -43,7 +43,7 @@ function card(item) {
         <div class="name">${esc(item.colorName)} — ${esc(item.partName)}</div>
         <div class="sub">${chips}${note}</div>
       </div>
-      <div class="count">${item.totalFound}/${item.totalQty}</div>
+      <div class="count">${Number(item.totalFound)}/${Number(item.totalQty)}</div>
       <div class="btns">
         <button class="toggle" aria-label="show projects" ${multi ? '' : 'hidden'}>${isOpen ? '▾' : '▸'}</button>
         <button class="minus" aria-label="one fewer">−</button>
@@ -70,7 +70,7 @@ function card(item) {
       row.className = 'proj-row';
       row.innerHTML = `
         <span class="pname">${esc(r.project)}${r.note ? ' · ' + esc(r.note) : ''}</span>
-        <span class="count">${r.found}/${r.qty}</span>
+        <span class="count">${Number(r.found)}/${Number(r.qty)}</span>
         <div class="btns">
           <button class="minus" aria-label="one fewer">−</button>
           <button class="plus" aria-label="one more">+</button>
@@ -137,7 +137,11 @@ els.import.onclick = () => els.importFile.click();
 els.importFile.onchange = (e) => { if (e.target.files[0]) importFile(e.target.files[0]); e.target.value = ''; };
 
 (async function init() {
-  rows = await (await fetch('data/parts.json')).json();
-  populateProjectFilter();
-  render();
+  try {
+    rows = await (await fetch('data/parts.json')).json();
+    populateProjectFilter();
+    render();
+  } catch (e) {
+    els.list.textContent = 'Could not load parts data. Try reloading the page.';
+  }
 })();
