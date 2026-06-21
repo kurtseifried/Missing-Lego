@@ -1,11 +1,50 @@
+<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Missing LEGO</title>
 <style>
-  body { margin: 0; font: 16px/1.5 system-ui, sans-serif; background: #f4f4f5; color: #18181b;
-         display: grid; place-content: center; min-height: 100vh; text-align: center; padding: 24px; }
-  h1 { font-size: 22px; }
-  p { color: #71717a; max-width: 28rem; }
+  :root { --gap: 10px; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 16px/1.4 system-ui, sans-serif; background: #f4f4f5; color: #18181b; }
+  header { position: sticky; top: 0; background: #fff; border-bottom: 1px solid #e4e4e7; padding: 8px; z-index: 10; }
+  .controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  select, button { font: inherit; padding: 8px 10px; border: 1px solid #d4d4d8; border-radius: 8px; background: #fff; }
+  button:active { background: #e4e4e7; }
+  main { padding: var(--gap); display: flex; flex-direction: column; gap: var(--gap); }
+  .group-header { display: flex; align-items: center; gap: 8px; font-weight: 600; margin-top: 8px; }
+  .swatch { width: 18px; height: 18px; border-radius: 4px; border: 1px solid #00000022; flex: none; }
+  .card-wrap { background: #fff; border: 1px solid #e4e4e7; border-radius: 12px; }
+  .card-wrap.done { opacity: .45; }
+  .card { display: flex; align-items: center; gap: 10px; padding: 8px; }
+  .card img { width: 56px; height: 56px; object-fit: contain; flex: none; background: #fafafa; border-radius: 8px; }
+  .meta { flex: 1; min-width: 0; }
+  .meta .name { font-weight: 600; }
+  .meta .sub { font-size: 13px; color: #71717a; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .chip { font-size: 11px; background: #f4f4f5; border: 1px solid #e4e4e7; border-radius: 999px; padding: 1px 7px; }
+  .count { font-variant-numeric: tabular-nums; min-width: 44px; text-align: center; font-weight: 600; }
+  .btns { display: flex; gap: 6px; }
+  .btns button { width: 40px; height: 40px; font-size: 20px; padding: 0; }
+  .toggle { width: 32px; height: 40px; font-size: 14px; padding: 0; }
+  .toggle[hidden] { display: none; }
+  .proj-rows { border-top: 1px solid #f0f0f1; padding: 4px 8px 8px; display: flex; flex-direction: column; gap: 4px; }
+  .proj-row { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+  .proj-row .pname { flex: 1; min-width: 0; }
+  .proj-row .count { min-width: 36px; }
 </style>
-<h1>🧱 Missing LEGO</h1>
-<p>Site scaffolding is live. The parts checklist will appear here once the app is built and the catalog is generated.</p>
+
+<header>
+  <div class="controls">
+    <label>Sort
+      <select id="sortBy"><option value="color">Color</option><option value="size">Size</option></select>
+    </label>
+    <button id="reverse" aria-pressed="false">Reverse</button>
+    <label>Project
+      <select id="projectFilter"><option value="">All</option></select>
+    </label>
+    <button id="download">Download</button>
+    <button id="import">Import</button>
+    <input id="importFile" type="file" accept="application/json" hidden>
+  </div>
+</header>
+<main id="list"></main>
+<script type="module" src="app.js"></script>
