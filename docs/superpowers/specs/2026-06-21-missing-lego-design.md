@@ -34,6 +34,20 @@ Two clearly separated halves:
 The interface between the two halves is the committed `parts.json` + `img/` files.
 The page has no knowledge of Rebrickable; the build script has no knowledge of the UI.
 
+### Two distinct data flows (do not conflate)
+
+1. **Parts catalog** (photos, colors, sizes, quantities): generated once at build
+   time, committed to the repo, and served to the phone by GitHub Pages. The phone
+   receives it simply by loading the site URL — it is NOT emailed, encoded in a URL,
+   or transmitted by the user. Publishing to Pages (`git push`) *is* the delivery.
+2. **Per-device progress** (found-counts): the only state that cannot live in the
+   repo because it differs per phone and changes while shopping. This is what the
+   `localStorage` + Download/Import file flow exists for. Nothing else needs exporting.
+
+Generating the catalog requires a free Rebrickable API key (Account → API), read
+from `.env` at build time only. There is no reliable no-auth endpoint mapping an
+element ID to a photo, so the key is required to (re)build `parts.json`.
+
 ## Repo layout
 
 ```
