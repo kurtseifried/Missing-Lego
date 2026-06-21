@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** A phone-first static GitHub Pages site listing missing LEGO parts with photos, sortable by color and size, with tap-to-count "found" tracking and file-based save/restore.
+**Goal:** A phone-first static GitHub Pages site listing missing LEGO parts across one or more projects, with photos, sortable by color and size, with per-project tap-to-count "found" tracking (parts common to multiple projects merge into one card), filterable by project, and file-based save/restore.
 
-**Architecture:** A Node build script reads hand-written `sets/*.txt` lists, resolves each element ID via the Rebrickable API into name/color/image, and writes a committed `data/parts.json` + `img/*.jpg`. A dependency-free static `index.html` reads that JSON, renders a sortable card list, and tracks found-counts in `localStorage` with JSON Download/Import for durability. All non-trivial logic lives in pure modules tested with Node's built-in test runner.
+**Architecture:** A Node build script reads hand-written `sets/*.txt` lists (each containing one or more projects), resolves each element ID via the Rebrickable API into name/color/image, and writes a committed `data/parts.json` (one requirement row per project part line) + `img/*.jpg`. A dependency-free static `index.html` reads that JSON, merges rows by element ID into per-project cards, renders a sortable list, and tracks found-counts in `localStorage` with JSON Download/Import for durability. All non-trivial logic lives in pure modules tested with Node's built-in test runner.
 
 **Tech Stack:** Node 18+ (native `fetch`, `node:test`, `node:fs` — no npm dependencies), vanilla HTML/CSS/JS ES modules. Static hosting on GitHub Pages.
 
@@ -14,7 +14,8 @@
 - **No npm packages**: build script and tests use only Node built-ins. A `package.json` exists solely to set `"type": "module"` so `.js`/`.mjs` files are ES modules in both Node and the browser.
 - **Node version**: 18 or newer (relies on global `fetch`).
 - **Secret handling**: the Rebrickable key lives only in `.env` as `REBRICKABLE_COM_API_KEY`; `.env` is gitignored and never committed.
-- **Progress key format**: found-counts are keyed `"<setNo>:<id>"` everywhere (build, logic, page, export file).
+- **Progress key format**: found-counts are keyed `"<project>:<id>"` everywhere (logic, page, export file), so each project's progress on a shared part is independent.
+- **Merging**: a part needed by multiple projects shows as one card; merging happens in the view layer (`logic.js`), never in the source or catalog. `data/parts.json` stays a flat list of per-project requirement rows.
 - **Import merge rule**: importing a progress file merges by key, keeping the **higher** count per key (never silently lowers progress).
 - **Size score**: numeric proxy for sorting only; `A*B` (or `A*B*C`) parsed from the part name, fallback `1.5` when no dimension pattern is present. Imperfect sorting is acceptable.
 
@@ -22,10 +23,10 @@
 
 - `package.json` — `{"type":"module"}` marker only.
 - `sets/31084.txt` — hand-written source list (user's exact text format).
-- `build/parse.mjs` — pure: `parseSourceList(text)`, `computeSizeScore(partName)`, `assembleParts(entries, catalogById)`.
+- `build/parse.mjs` — pure: `parseSourceList(text)` (projects + part lines), `computeSizeScore(partName)`, `assembleParts(entries, catalogById)`.
 - `build/parse.test.mjs` — tests for the above.
 - `build/fetch.mjs` — orchestrator: read `.env`, parse `sets/*.txt`, call Rebrickable (with on-disk cache), download images, write `data/parts.json`. Thin I/O around the pure functions.
-- `logic.js` — pure view/state logic shared by page and tests: `keyFor`, `isDone`, `nextFound`, `decFound`, `mergeProgress`, `exportProgress`, `parseImport`, `sortBySize`, `groupByColor`, `buildView`.
+- `logic.js` — pure view/state logic shared by page and tests: `keyFor`, `isDone`, `nextFound`, `decFound`, `mergeProgress`, `exportProgress`, `parseImport`, `sortBySize`, `groupByColor`, `mergeRows`, `buildView`, `incFirstOpen`, `decLastFilled`, `incProject`, `decProject`.
 - `logic.test.mjs` — tests for `logic.js`.
 - `app.js` — DOM rendering, `localStorage`, event wiring, Download/Import. Imports `logic.js`. Kept thin.
 - `index.html` — markup + inline CSS, loads `app.js` as a module.
@@ -106,9 +107,9 @@ git commit -m "chore: add package.json and first source list"
 **Interfaces:**
 - Consumes: nothing.
 - Produces:
-  - `parseSourceList(text: string) => Array<{setNo: string, qty: number, id: string, note: string}>`
+  - `parseSourceList(text: string) => Array<{project: string, qty: number, id: string, note: string}>` — a header line (`/^(set|project|build)\b/i`) sets `project` (its full trimmed text) for following part lines.
   - `computeSizeScore(partName: string) => number`
-  - `assembleParts(entries, catalogById) => Array<{id, setNo, qty, note, partName, colorName, colorRgb, sizeScore, img}>` where `catalogById` is `{ [id]: {partName, colorName, colorRgb} }`; entries whose id is missing from `catalogById` are dropped.
+  - `assembleParts(entries, catalogById) => Array<{id, project, qty, note, partName, colorName, colorRgb, sizeScore, img}>` where `catalogById` is `{ [id]: {partName, colorName, colorRgb} }`; entries whose id is missing from `catalogById` are dropped.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -118,7 +119,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseSourceList, computeSizeScore, assembleParts } from './parse.mjs';
 
-test('parseSourceList reads set header and part lines', () => {
+test('parseSourceList reads a project header and part lines', () => {
   const text = [
     'Set 31084',
     '1x 6115306 brown lady hair',
@@ -128,15 +129,14 @@ test('parseSourceList reads set header and part lines', () => {
   ].join('\n');
   const entries = parseSourceList(text);
   assert.equal(entries.length, 2);
-  assert.deepEqual(entries[0], { setNo: '31084', qty: 1, id: '6115306', note: 'brown lady hair' });
-  assert.deepEqual(entries[1], { setNo: '31084', qty: 3, id: '4624985', note: 'yellow 1x1 with knob (75, 256)' });
+  assert.deepEqual(entries[0], { project: 'Set 31084', qty: 1, id: '6115306', note: 'brown lady hair' });
+  assert.deepEqual(entries[1], { project: 'Set 31084', qty: 3, id: '4624985', note: 'yellow 1x1 with knob (75, 256)' });
 });
 
-test('parseSourceList tracks the current set across multiple headers', () => {
-  const text = ['Set 111', '1x 1001 a', 'Set 222', '2x 2002 b'].join('\n');
+test('parseSourceList handles Set/Project/Build headers across the file', () => {
+  const text = ['Set 111', '1x 1001 a', 'Project Castle', '2x 2002 b', 'Build Ship', '1x 3003 c'].join('\n');
   const entries = parseSourceList(text);
-  assert.equal(entries[0].setNo, '111');
-  assert.equal(entries[1].setNo, '222');
+  assert.deepEqual(entries.map((e) => e.project), ['Set 111', 'Project Castle', 'Build Ship']);
   assert.equal(entries[1].qty, 2);
 });
 
@@ -149,14 +149,14 @@ test('computeSizeScore multiplies dimensions, falls back to 1.5', () => {
 
 test('assembleParts joins entries with catalog and drops unknown ids', () => {
   const entries = [
-    { setNo: '31084', qty: 3, id: '4624985', note: 'knob' },
-    { setNo: '31084', qty: 1, id: '9999999', note: 'missing' },
+    { project: 'Set 31084', qty: 3, id: '4624985', note: 'knob' },
+    { project: 'Set 31084', qty: 1, id: '9999999', note: 'missing' },
   ];
   const catalog = { '4624985': { partName: 'Plate 1 x 1', colorName: 'Yellow', colorRgb: 'F2CD37' } };
   const parts = assembleParts(entries, catalog);
   assert.equal(parts.length, 1);
   assert.deepEqual(parts[0], {
-    id: '4624985', setNo: '31084', qty: 3, note: 'knob',
+    id: '4624985', project: 'Set 31084', qty: 3, note: 'knob',
     partName: 'Plate 1 x 1', colorName: 'Yellow', colorRgb: 'F2CD37',
     sizeScore: 1, img: 'img/4624985.jpg',
   });
@@ -182,16 +182,15 @@ export function computeSizeScore(partName) {
 
 export function parseSourceList(text) {
   const entries = [];
-  let setNo = null;
+  let project = null;
   for (const raw of String(text).split(/\r?\n/)) {
     const line = raw.trim();
     if (!line) continue;
-    const setMatch = line.match(/^set\s+(\w+)/i);
-    if (setMatch) { setNo = setMatch[1]; continue; }
+    if (/^(set|project|build)\b/i.test(line)) { project = line; continue; }
     const partMatch = line.match(/^(\d+)\s*x\s+(\d+)\s+(.*)$/i);
     if (partMatch) {
       entries.push({
-        setNo,
+        project,
         qty: Number(partMatch[1]),
         id: partMatch[2],
         note: partMatch[3].trim(),
@@ -209,7 +208,7 @@ export function assembleParts(entries, catalogById) {
       if (!cat) return null;
       return {
         id: e.id,
-        setNo: e.setNo,
+        project: e.project,
         qty: e.qty,
         note: e.note,
         partName: cat.partName,
@@ -356,14 +355,14 @@ git commit -m "feat: Rebrickable build orchestrator"
 **Interfaces:**
 - Consumes: nothing.
 - Produces (all pure, no DOM):
-  - `keyFor(setNo, id) => string`
-  - `isDone(found, needed) => boolean`
-  - `nextFound(found, needed) => number`
-  - `decFound(found) => number`
+  - `keyFor(project, id) => string` → `"<project>:<id>"`
+  - `isDone(found, needed) => boolean`, `nextFound(found, needed) => number`, `decFound(found) => number`
   - `mergeProgress(current, incoming) => object` (higher count per key wins)
   - `exportProgress(found, isoTimestamp) => {version:1, exportedAt, found}`
   - `parseImport(obj) => found` (throws `Error` on unrecognized shape)
-  - `buildView(parts, found, {by, reverse}) => {mode:'flat', items} | {mode:'grouped', groups:[{colorName, colorRgb, parts}]}` — done parts sink below active within the active ordering.
+  - `mergeRows(rows, found) => Array<Item>` where `Item = {id, partName, colorName, colorRgb, sizeScore, img, reqs: Array<{project, qty, note, found}>, totalQty, totalFound}` — groups requirement rows by element ID; per-req `found` is read from the map and capped at that req's qty.
+  - `buildView(rows, found, {by, reverse, project}) => {mode:'flat', items: Item[]} | {mode:'grouped', groups:[{colorName, colorRgb, parts: Item[]}]}` — filters to one project when `project` is truthy, otherwise merges across all; an item is done when `totalFound >= totalQty`; done items sink below active within the active ordering.
+  - `incFirstOpen(found, item) => found'` (adds 1 to the first req with `found < qty`); `decLastFilled(found, item) => found'` (removes 1 from the last req with `found > 0`); `incProject(found, project, id, qty) => found'`; `decProject(found, project, id) => found'`. All return a new map; none mutate.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -373,11 +372,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   keyFor, isDone, nextFound, decFound, mergeProgress,
-  exportProgress, parseImport, buildView,
+  exportProgress, parseImport, mergeRows, buildView,
+  incFirstOpen, decLastFilled, incProject, decProject,
 } from './logic.js';
 
 test('count helpers cap and floor', () => {
-  assert.equal(keyFor('31084', '4624985'), '31084:4624985');
+  assert.equal(keyFor('Set 31084', '4624985'), 'Set 31084:4624985');
   assert.equal(nextFound(2, 3), 3);
   assert.equal(nextFound(3, 3), 3);
   assert.equal(decFound(0), 0);
@@ -402,31 +402,61 @@ test('parseImport validates version and coerces counts', () => {
   assert.throws(() => parseImport(null));
 });
 
-const PARTS = [
-  { id: '1', setNo: 'S', qty: 1, partName: 'P', colorName: 'Red', colorRgb: 'ff0000', sizeScore: 8 },
-  { id: '2', setNo: 'S', qty: 1, partName: 'P', colorName: 'Blue', colorRgb: '0000ff', sizeScore: 1 },
-  { id: '3', setNo: 'S', qty: 2, partName: 'P', colorName: 'Red', colorRgb: 'ff0000', sizeScore: 2 },
+// element '4624985' is shared by two projects; '1' and '2' are single-project.
+const ROWS = [
+  { id: '1', project: 'Castle', qty: 1, note: '', partName: 'P', colorName: 'Red', colorRgb: 'ff0000', sizeScore: 8, img: 'img/1.jpg' },
+  { id: '2', project: 'Castle', qty: 1, note: '', partName: 'P', colorName: 'Blue', colorRgb: '0000ff', sizeScore: 1, img: 'img/2.jpg' },
+  { id: '4624985', project: 'Castle', qty: 3, note: '', partName: 'Plate 1 x 1', colorName: 'Yellow', colorRgb: 'F2CD37', sizeScore: 1, img: 'img/4624985.jpg' },
+  { id: '4624985', project: 'Ship', qty: 2, note: '', partName: 'Plate 1 x 1', colorName: 'Yellow', colorRgb: 'F2CD37', sizeScore: 1, img: 'img/4624985.jpg' },
 ];
 
+test('mergeRows groups by element id with per-project reqs and totals', () => {
+  const items = mergeRows(ROWS, { 'Castle:4624985': 2 });
+  const shared = items.find((i) => i.id === '4624985');
+  assert.deepEqual(shared.reqs.map((r) => [r.project, r.qty, r.found]), [['Castle', 3, 2], ['Ship', 2, 0]]);
+  assert.equal(shared.totalQty, 5);
+  assert.equal(shared.totalFound, 2);
+});
+
 test('buildView flat sorts by size and sinks done to bottom', () => {
-  const view = buildView(PARTS, { 'S:2': 1 }, { by: 'size', reverse: false });
+  // id2 (Blue, size1) done; id '4624985' (Yellow, size1) active; id1 (Red, size8) active
+  const view = buildView(ROWS, { 'Castle:2': 1 }, { by: 'size', reverse: false });
   assert.equal(view.mode, 'flat');
-  // active by size asc: id3 (2), id1 (8); done appended: id2
-  assert.deepEqual(view.items.map((p) => p.id), ['3', '1', '2']);
+  assert.deepEqual(view.items.map((i) => i.id), ['4624985', '1', '2']);
 });
 
 test('buildView flat reverse flips active order, done still last', () => {
-  const view = buildView(PARTS, { 'S:2': 1 }, { by: 'size', reverse: true });
-  assert.deepEqual(view.items.map((p) => p.id), ['1', '3', '2']);
+  const view = buildView(ROWS, { 'Castle:2': 1 }, { by: 'size', reverse: true });
+  assert.deepEqual(view.items.map((i) => i.id), ['1', '4624985', '2']);
 });
 
-test('buildView grouped by color, done sinks within group', () => {
-  const view = buildView(PARTS, { 'S:1': 1 }, { by: 'color', reverse: false });
+test('buildView grouped by color, alpha order', () => {
+  const view = buildView(ROWS, {}, { by: 'color', reverse: false });
   assert.equal(view.mode, 'grouped');
-  assert.deepEqual(view.groups.map((g) => g.colorName), ['Blue', 'Red']);
-  const red = view.groups.find((g) => g.colorName === 'Red');
-  // Red active: id3 (size2); done last: id1
-  assert.deepEqual(red.parts.map((p) => p.id), ['3', '1']);
+  assert.deepEqual(view.groups.map((g) => g.colorName), ['Blue', 'Red', 'Yellow']);
+});
+
+test('buildView project filter shows only that project as single-req items', () => {
+  const view = buildView(ROWS, {}, { by: 'size', reverse: false, project: 'Ship' });
+  assert.deepEqual(view.items.map((i) => i.id), ['4624985']);
+  assert.equal(view.items[0].reqs.length, 1);
+  assert.equal(view.items[0].totalQty, 2);
+});
+
+test('incFirstOpen fills the first unmet project; decLastFilled empties the last filled', () => {
+  const item = mergeRows(ROWS, { 'Castle:4624985': 3 }).find((i) => i.id === '4624985');
+  // Castle is full (3/3); + should land on Ship
+  const after = incFirstOpen({ 'Castle:4624985': 3 }, item);
+  assert.equal(after['Ship:4624985'], 1);
+  // last filled is Ship; - should remove from Ship
+  const back = decLastFilled(after, item);
+  assert.equal(back['Ship:4624985'], 0);
+  assert.equal(back['Castle:4624985'], 3);
+});
+
+test('incProject caps at qty, decProject floors at 0', () => {
+  assert.deepEqual(incProject({ 'Castle:1': 1 }, 'Castle', '1', 1), { 'Castle:1': 1 });
+  assert.deepEqual(decProject({ 'Castle:1': 0 }, 'Castle', '1'), { 'Castle:1': 0 });
 });
 ```
 
@@ -438,7 +468,7 @@ Expected: FAIL — `Cannot find module './logic.js'`.
 - [ ] **Step 3: Write `logic.js`**
 
 ```js
-export const keyFor = (setNo, id) => `${setNo}:${id}`;
+export const keyFor = (project, id) => `${project}:${id}`;
 export const isDone = (found, needed) => found >= needed;
 export const nextFound = (found, needed) => Math.min(found + 1, needed);
 export const decFound = (found) => Math.max(found - 1, 0);
@@ -466,41 +496,95 @@ export function parseImport(obj) {
   return found;
 }
 
-export function sortBySize(parts, reverse = false) {
-  const arr = [...parts].sort(
+// Group requirement rows into one item per element id, attaching per-project
+// found-counts (capped at each project's qty) and the combined totals.
+export function mergeRows(rows, found) {
+  const byId = new Map();
+  for (const r of rows) {
+    if (!byId.has(r.id)) {
+      byId.set(r.id, {
+        id: r.id, partName: r.partName, colorName: r.colorName,
+        colorRgb: r.colorRgb, sizeScore: r.sizeScore, img: r.img, reqs: [],
+      });
+    }
+    byId.get(r.id).reqs.push({
+      project: r.project, qty: r.qty, note: r.note,
+      found: Math.min(found[keyFor(r.project, r.id)] ?? 0, r.qty),
+    });
+  }
+  const items = [...byId.values()];
+  for (const it of items) {
+    it.totalQty = it.reqs.reduce((a, r) => a + r.qty, 0);
+    it.totalFound = it.reqs.reduce((a, r) => a + r.found, 0);
+  }
+  return items;
+}
+
+export function sortBySize(items, reverse = false) {
+  const arr = [...items].sort(
     (a, b) => a.sizeScore - b.sizeScore || a.id.localeCompare(b.id),
   );
   return reverse ? arr.reverse() : arr;
 }
 
-export function groupByColor(parts, reverse = false) {
+export function groupByColor(items, reverse = false) {
   const byColor = new Map();
-  for (const p of parts) {
-    if (!byColor.has(p.colorName)) {
-      byColor.set(p.colorName, { colorName: p.colorName, colorRgb: p.colorRgb, parts: [] });
+  for (const it of items) {
+    if (!byColor.has(it.colorName)) {
+      byColor.set(it.colorName, { colorName: it.colorName, colorRgb: it.colorRgb, parts: [] });
     }
-    byColor.get(p.colorName).parts.push(p);
+    byColor.get(it.colorName).parts.push(it);
   }
   const groups = [...byColor.values()].sort((a, b) => a.colorName.localeCompare(b.colorName));
   return reverse ? groups.reverse() : groups;
 }
 
-export function buildView(parts, found, { by, reverse }) {
-  const doneOf = (p) => isDone(found[keyFor(p.setNo, p.id)] ?? 0, p.qty);
+export function buildView(rows, found, { by, reverse, project = '' }) {
+  const filtered = project ? rows.filter((r) => r.project === project) : rows;
+  const items = mergeRows(filtered, found);
+  const doneOf = (it) => it.totalFound >= it.totalQty;
   if (by === 'color') {
-    const groups = groupByColor(parts, reverse);
+    const groups = groupByColor(items, reverse);
     return {
       mode: 'grouped',
       groups: groups.map((g) => {
-        const active = sortBySize(g.parts.filter((p) => !doneOf(p)), reverse);
+        const active = sortBySize(g.parts.filter((it) => !doneOf(it)), reverse);
         const done = sortBySize(g.parts.filter(doneOf), reverse);
         return { colorName: g.colorName, colorRgb: g.colorRgb, parts: [...active, ...done] };
       }),
     };
   }
-  const active = sortBySize(parts.filter((p) => !doneOf(p)), reverse);
-  const done = sortBySize(parts.filter(doneOf), reverse);
+  const active = sortBySize(items.filter((it) => !doneOf(it)), reverse);
+  const done = sortBySize(items.filter(doneOf), reverse);
   return { mode: 'flat', items: [...active, ...done] };
+}
+
+export function incFirstOpen(found, item) {
+  const out = { ...found };
+  for (const r of item.reqs) {
+    const k = keyFor(r.project, item.id);
+    if ((out[k] ?? 0) < r.qty) { out[k] = (out[k] ?? 0) + 1; break; }
+  }
+  return out;
+}
+
+export function decLastFilled(found, item) {
+  const out = { ...found };
+  for (let i = item.reqs.length - 1; i >= 0; i--) {
+    const k = keyFor(item.reqs[i].project, item.id);
+    if ((out[k] ?? 0) > 0) { out[k] = out[k] - 1; break; }
+  }
+  return out;
+}
+
+export function incProject(found, project, id, qty) {
+  const k = keyFor(project, id);
+  return { ...found, [k]: nextFound(found[k] ?? 0, qty) };
+}
+
+export function decProject(found, project, id) {
+  const k = keyFor(project, id);
+  return { ...found, [k]: decFound(found[k] ?? 0) };
 }
 ```
 
@@ -546,15 +630,23 @@ git commit -m "feat: pure view and progress logic"
   main { padding: var(--gap); display: flex; flex-direction: column; gap: var(--gap); }
   .group-header { display: flex; align-items: center; gap: 8px; font-weight: 600; margin-top: 8px; }
   .swatch { width: 18px; height: 18px; border-radius: 4px; border: 1px solid #00000022; flex: none; }
-  .card { display: flex; align-items: center; gap: 10px; background: #fff; border: 1px solid #e4e4e7; border-radius: 12px; padding: 8px; }
-  .card.done { opacity: .45; }
+  .card-wrap { background: #fff; border: 1px solid #e4e4e7; border-radius: 12px; }
+  .card-wrap.done { opacity: .45; }
+  .card { display: flex; align-items: center; gap: 10px; padding: 8px; }
   .card img { width: 56px; height: 56px; object-fit: contain; flex: none; background: #fafafa; border-radius: 8px; }
   .meta { flex: 1; min-width: 0; }
   .meta .name { font-weight: 600; }
-  .meta .sub { font-size: 13px; color: #71717a; }
+  .meta .sub { font-size: 13px; color: #71717a; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .chip { font-size: 11px; background: #f4f4f5; border: 1px solid #e4e4e7; border-radius: 999px; padding: 1px 7px; }
   .count { font-variant-numeric: tabular-nums; min-width: 44px; text-align: center; font-weight: 600; }
   .btns { display: flex; gap: 6px; }
   .btns button { width: 40px; height: 40px; font-size: 20px; padding: 0; }
+  .toggle { width: 32px; height: 40px; font-size: 14px; padding: 0; }
+  .toggle[hidden] { display: none; }
+  .proj-rows { border-top: 1px solid #f0f0f1; padding: 4px 8px 8px; display: flex; flex-direction: column; gap: 4px; }
+  .proj-row { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+  .proj-row .pname { flex: 1; min-width: 0; }
+  .proj-row .count { min-width: 36px; }
 </style>
 
 <header>
@@ -563,8 +655,8 @@ git commit -m "feat: pure view and progress logic"
       <select id="sortBy"><option value="color">Color</option><option value="size">Size</option></select>
     </label>
     <button id="reverse" aria-pressed="false">Reverse</button>
-    <label>Set
-      <select id="setFilter"><option value="">All</option></select>
+    <label>Project
+      <select id="projectFilter"><option value="">All</option></select>
     </label>
     <button id="download">Download</button>
     <button id="import">Import</button>
@@ -578,76 +670,115 @@ git commit -m "feat: pure view and progress logic"
 - [ ] **Step 2: Write `app.js`**
 
 ```js
-import { keyFor, nextFound, decFound, isDone, mergeProgress, exportProgress, parseImport, buildView } from './logic.js';
+import {
+  mergeProgress, exportProgress, parseImport, buildView,
+  incFirstOpen, decLastFilled, incProject, decProject,
+} from './logic.js';
 
 const STORAGE_KEY = 'lego-progress';
 const els = {
   list: document.getElementById('list'),
   sortBy: document.getElementById('sortBy'),
   reverse: document.getElementById('reverse'),
-  setFilter: document.getElementById('setFilter'),
+  projectFilter: document.getElementById('projectFilter'),
   download: document.getElementById('download'),
   import: document.getElementById('import'),
   importFile: document.getElementById('importFile'),
 };
 
-let parts = [];
+let rows = [];
 let found = loadProgress();
 let reverse = false;
+const expanded = new Set(); // element ids whose per-project rows are open
 
 function loadProgress() {
   try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || {}; }
   catch { return {}; }
 }
 function saveProgress() { localStorage.setItem(STORAGE_KEY, JSON.stringify(found)); }
+function update(newFound) { found = newFound; saveProgress(); render(); }
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
-function card(p) {
-  const k = keyFor(p.setNo, p.id);
-  const f = found[k] ?? 0;
-  const done = isDone(f, p.qty);
-  const el = document.createElement('div');
-  el.className = 'card' + (done ? ' done' : '');
-  el.innerHTML = `
-    <img src="${p.img}" alt="" loading="lazy"
-         onerror="this.style.visibility='hidden'">
-    <div class="meta">
-      <div class="name">${p.colorName} — ${p.partName}</div>
-      <div class="sub">Set ${p.setNo}${p.note ? ' · ' + p.note : ''}</div>
-    </div>
-    <div class="count">${f}/${p.qty}</div>
-    <div class="btns">
-      <button class="minus" aria-label="one fewer">−</button>
-      <button class="plus" aria-label="one more">+</button>
+function card(item) {
+  const done = item.totalFound >= item.totalQty;
+  const multi = item.reqs.length > 1;
+  const isOpen = expanded.has(item.id);
+  const chips = item.reqs.map((r) => `<span class="chip">${esc(r.project)}</span>`).join(' ');
+  const note = !multi && item.reqs[0].note ? ' · ' + esc(item.reqs[0].note) : '';
+
+  const wrap = document.createElement('div');
+  wrap.className = 'card-wrap' + (done ? ' done' : '');
+  wrap.innerHTML = `
+    <div class="card">
+      <img src="${esc(item.img)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">
+      <div class="meta">
+        <div class="name">${esc(item.colorName)} — ${esc(item.partName)}</div>
+        <div class="sub">${chips}${note}</div>
+      </div>
+      <div class="count">${item.totalFound}/${item.totalQty}</div>
+      <div class="btns">
+        <button class="toggle" aria-label="show projects" ${multi ? '' : 'hidden'}>${isOpen ? '▾' : '▸'}</button>
+        <button class="minus" aria-label="one fewer">−</button>
+        <button class="plus" aria-label="one more">+</button>
+      </div>
     </div>`;
-  el.querySelector('.plus').onclick = () => { found[k] = nextFound(f, p.qty); saveProgress(); render(); };
-  el.querySelector('.minus').onclick = () => { found[k] = decFound(f); saveProgress(); render(); };
-  return el;
+
+  // Collapsed +/− auto-allocate across projects.
+  wrap.querySelector('.plus').onclick = () => update(incFirstOpen(found, item));
+  wrap.querySelector('.minus').onclick = () => update(decLastFilled(found, item));
+  if (multi) {
+    wrap.querySelector('.toggle').onclick = () => {
+      if (isOpen) expanded.delete(item.id); else expanded.add(item.id);
+      render();
+    };
+  }
+
+  // Expanded per-project rows.
+  if (multi && isOpen) {
+    const box = document.createElement('div');
+    box.className = 'proj-rows';
+    for (const r of item.reqs) {
+      const row = document.createElement('div');
+      row.className = 'proj-row';
+      row.innerHTML = `
+        <span class="pname">${esc(r.project)}${r.note ? ' · ' + esc(r.note) : ''}</span>
+        <span class="count">${r.found}/${r.qty}</span>
+        <div class="btns">
+          <button class="minus" aria-label="one fewer">−</button>
+          <button class="plus" aria-label="one more">+</button>
+        </div>`;
+      row.querySelector('.plus').onclick = () => update(incProject(found, r.project, item.id, r.qty));
+      row.querySelector('.minus').onclick = () => update(decProject(found, r.project, item.id));
+      box.append(row);
+    }
+    wrap.append(box);
+  }
+  return wrap;
 }
 
 function render() {
-  const setNo = els.setFilter.value;
-  const visible = setNo ? parts.filter((p) => p.setNo === setNo) : parts;
-  const view = buildView(visible, found, { by: els.sortBy.value, reverse });
+  const project = els.projectFilter.value;
+  const view = buildView(rows, found, { by: els.sortBy.value, reverse, project });
   els.list.replaceChildren();
   if (view.mode === 'grouped') {
     for (const g of view.groups) {
       const h = document.createElement('div');
       h.className = 'group-header';
-      h.innerHTML = `<span class="swatch" style="background:#${g.colorRgb}"></span>${g.colorName}`;
+      h.innerHTML = `<span class="swatch" style="background:#${esc(g.colorRgb)}"></span>${esc(g.colorName)}`;
       els.list.append(h);
-      for (const p of g.parts) els.list.append(card(p));
+      for (const it of g.parts) els.list.append(card(it));
     }
   } else {
-    for (const p of view.items) els.list.append(card(p));
+    for (const it of view.items) els.list.append(card(it));
   }
 }
 
-function populateSetFilter() {
-  const sets = [...new Set(parts.map((p) => p.setNo))].sort();
-  for (const s of sets) {
+function populateProjectFilter() {
+  const projects = [...new Set(rows.map((r) => r.project))].sort();
+  for (const p of projects) {
     const o = document.createElement('option');
-    o.value = s; o.textContent = `Set ${s}`;
-    els.setFilter.append(o);
+    o.value = p; o.textContent = p;
+    els.projectFilter.append(o);
   }
 }
 
@@ -664,24 +795,22 @@ function download() {
 async function importFile(file) {
   try {
     const incoming = parseImport(JSON.parse(await file.text()));
-    found = mergeProgress(found, incoming);
-    saveProgress();
-    render();
+    update(mergeProgress(found, incoming));
   } catch (e) {
     alert('Could not import that file: ' + e.message);
   }
 }
 
 els.sortBy.onchange = render;
-els.setFilter.onchange = render;
+els.projectFilter.onchange = render;
 els.reverse.onclick = () => { reverse = !reverse; els.reverse.setAttribute('aria-pressed', String(reverse)); render(); };
 els.download.onclick = download;
 els.import.onclick = () => els.importFile.click();
 els.importFile.onchange = (e) => { if (e.target.files[0]) importFile(e.target.files[0]); e.target.value = ''; };
 
 (async function init() {
-  parts = await (await fetch('data/parts.json')).json();
-  populateSetFilter();
+  rows = await (await fetch('data/parts.json')).json();
+  populateProjectFilter();
   render();
 })();
 ```
@@ -698,11 +827,12 @@ Run a local static server and open it:
 python3 -m http.server 8000
 ```
 Then load `http://localhost:8000/` (use the `chrome-devtools` skill or a phone-sized viewport). Confirm:
-- Cards show real thumbnails, color names, and `0/qty` counts.
+- Cards show real thumbnails, color names, project chips, and `0/qty` counts.
 - Sort = Color shows swatch group headers; Sort = Size shows one continuous list; Reverse flips order.
 - Tapping `+` raises the count; at full count the card greys and drops to the bottom; `−` brings it back.
-- Set filter switches between All and Set 31084.
+- Project filter switches between All and `Set 31084`.
 - Download saves `lego-progress.json`; reload the page (counts persist via localStorage); Import re-merges a saved file.
+- **Merge check** (needs a second project that shares an element ID): add a temporary `sets/zz-test.txt` with a `Project Test` header and one line reusing an existing element ID (e.g. `2x 4624985 test`), rebuild, reload. Confirm the shared part shows one card with both project chips and the combined total, that the `▸` toggle reveals two per-project rows with independent `+/−`, and that the collapsed `+` fills the first not-full project. Delete the temp file and rebuild when done.
 
 - [ ] **Step 5: Commit**
 
@@ -729,8 +859,8 @@ git commit -m "feat: phone-first parts page with generated catalog data"
 
 Phone-first checklist of missing LEGO parts, sortable by color and size.
 
-## Add or change a set
-1. Edit/add a file in `sets/` (format: `Set <number>` header, then `<qty>x <elementId> <description>` lines).
+## Add or change a project
+1. Edit/add a file in `sets/`. Each project starts with a header line — `Set 31084`, `Project Castle`, or `Build Ship` — followed by `<qty>x <elementId> <description>` lines. One file may hold several projects, and the same element ID may appear in multiple projects (it merges into one card on the page).
 2. Put your Rebrickable API key in `.env` as `REBRICKABLE_COM_API_KEY=...` (never committed).
 3. Run `node build/fetch.mjs` to regenerate `data/parts.json` + `img/`.
 4. Commit and push. GitHub Pages redeploys automatically.
@@ -758,6 +888,6 @@ git commit -m "docs: README and deployment notes"
 
 ## Self-Review Notes
 
-- **Spec coverage:** source format (T1/T2), Rebrickable build + image download + cache (T3), sizeScore (T2), color/size sort + reverse + done-sinks (T4), set filter & cards (T5), localStorage + Download/Import merge (T4 logic + T5 wiring), error handling — missing id dropped (T2/T3), missing image placeholder (T5 `onerror`), bad import file (T5 alert) — all mapped. Deployment (T6).
+- **Spec coverage:** generalized source format with `Set/Project/Build` headers (T1/T2), multi-project + same-id-across-projects (T2 parser, T4 `mergeRows`), Rebrickable build + image download + cache (T3), sizeScore (T2), merge-by-element-ID into per-project cards (T4 `mergeRows`/`buildView`, T5 card), per-project tick-off + collapsed auto-allocate (T4 `incProject`/`decProject`/`incFirstOpen`/`decLastFilled`, T5 wiring), color/size sort + reverse + done-sinks (T4), project filter & chips (T5), localStorage + Download/Import merge (T4 logic + T5 wiring), error handling — missing id dropped (T2/T3), missing image placeholder (T5 `onerror`), bad import file (T5 alert), HTML escaping of user/catalog text (T5 `esc`) — all mapped. Deployment (T6).
 - **Placeholder scan:** none — every code step is complete.
-- **Type consistency:** `keyFor`, `buildView` shape (`mode`/`items`/`groups`), part object fields, and the `"<setNo>:<id>"` key format are identical across logic, tests, and `app.js`.
+- **Type consistency:** `keyFor(project, id)`, the `"<project>:<id>"` key format, the merged `Item` shape (`reqs`/`totalQty`/`totalFound`), and `buildView` return shape (`mode`/`items`/`groups`) are identical across `logic.js`, `logic.test.mjs`, and `app.js`. The `app.js` import list matches the `logic.js` exports it uses (`mergeProgress`, `exportProgress`, `parseImport`, `buildView`, `incFirstOpen`, `decLastFilled`, `incProject`, `decProject`).
